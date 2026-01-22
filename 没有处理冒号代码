@@ -1,0 +1,296 @@
+import re
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from docx import Document
+from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Pt
+import sys
+
+# 严格校验Python 3.8.7版本
+assert sys.version_info >= (3, 8) and sys.version_info < (3, 9), \
+    f"当前Python版本：{sys.version}，请使用3.8.7版本！"
+
+def extract_title_number(cell_text):
+    """
+    提取并剪切标题号码：数字+点组合（从首个数字到第一个汉字结束）
+    返回：(标题号码, 剪切后的剩余文本)
+    """
+    if not cell_text:
+        return "", cell_text
+    
+    # 正则精准匹配数字+点的组合，直到第一个汉字
+    pattern = re.compile(r'^([0-9\.]+)[^\u4e00-\u9fa5]*')
+    match = pattern.search(cell_text)
+    
+    if match:
+        title_num = match.group(1)
+        # 剪切：删除原文本中的标题号码部分
+        remaining_text = cell_text[len(match.group(0)):].strip()
+        return title_num, remaining_text
+    return "", cell_text
+
+def get_original_border_attrs(cell):
+    """获取单元格原有边框的完整格式（粗细、颜色、类型）"""
+    tc_borders = cell._tc.get_or_add_tcPr().find(qn('w:tcBorders'))
+    # 默认格式（匹配Word默认表格样式）
+    default_attrs = {
+        'sz': '4',       # 边框粗细（1/8磅单位，4=0.5磅）
+        'color': 'auto', # 边框颜色
+        'val': 'single'  # 边框类型（实线）
+    }
+    
+    if tc_borders is None:
+        return default_attrs
+    
+    # 优先读取top边框（最具代表性）的格式
+    top_border = tc_borders.find(qn('w:top'))
+    if top_border is not None:
+        default_attrs['sz'] = top_border.get(qn('w:sz')) or default_attrs['sz']
+        default_attrs['color'] = top_border.get(qn('w:color')) or default_attrs['color']
+        default_attrs['val'] = top_border.get(qn('w:val')) or default_attrs['val']
+    
+    return default_attrs
+
+def adjust_cell_borders(row, start_col, end_col):
+    """
+    隐藏2-6列内框，保留外框（完全继承原边框格式，禁止合并单元格）
+    :param row: 目标行
+    :param start_col: 起始列索引（第二列=1）
+    :param end_col: 结束列索引（第六列=5）
+    """
+    if start_col < 0 or end_col >= len(row.cells):
+        return
+    
+    # 获取原表格边框格式（以第二列单元格为基准）
+    border_attrs = get_original_border_attrs(row.cells[start_col])
+    
+    # 逐列设置边框：保留外框、隐藏内框
+    for col_idx in range(start_col, end_col + 1):
+        cell = row.cells[col_idx]
+        tc_borders = OxmlElement('w:tcBorders')
+        
+        # 边框规则（精准控制内/外框）
+        if col_idx == start_col:  # 第二列（左外框）
+            border_rules = {
+                'left': border_attrs['val'],  # 保留左外框
+                'top': border_attrs['val'],   # 保留上框
+                'bottom': border_attrs['val'],# 保留下框
+                'right': 'nil'                # 隐藏右内框
+            }
+        elif col_idx == end_col:  # 第六列（右外框）
+            border_rules = {
+                'right': border_attrs['val'], # 保留右外框
+                'top': border_attrs['val'],   # 保留上框
+                'bottom': border_attrs['val'],# 保留下框
+                'left': 'nil'                 # 隐藏左内框
+            }
+        else:  # 3-5列（中间列）
+            border_rules = {
+                'top': border_attrs['val'],   # 保留上框
+                'bottom': border_attrs['val'],# 保留下框
+                'left': 'nil',                # 隐藏左内框
+                'right': 'nil'                # 隐藏右内框
+            }
+        
+        # 应用边框格式（完全继承原有样式）
+        for border_name, border_val in border_rules.items():
+            b = OxmlElement(f'w:{border_name}')
+            b.set(qn('w:val'), border_val)
+            b.set(qn('w:sz'), border_attrs['sz'])       # 保留原粗细
+            b.set(qn('w:color'), border_attrs['color']) # 保留原颜色
+            b.set(qn('w:space'), '0')
+            tc_borders.append(b)
+        
+        # 替换单元格边框配置（覆盖但保留原格式）
+        cell._tc.get_or_add_tcPr().append(tc_borders)
+
+def merge_content_visually(row, start_col, end_col):
+    """
+    视觉上合并2-6列内容（文本层面，非单元格合并），靠左对齐
+    """
+    # 收集2-6列所有内容
+    content_list = []
+    for col_idx in range(start_col, end_col + 1):
+        content_list.append(row.cells[col_idx].text.strip())
+    
+    # 拼接内容（过滤空值，保留换行）
+    merged_content = '\n'.join([c for c in content_list if c])
+    
+    # 内容放入第二列，清空3-6列文本
+    row.cells[start_col].text = merged_content
+    for col_idx in range(start_col + 1, end_col + 1):
+        row.cells[col_idx].text = ""
+    
+    # 设置内容靠左对齐，保留原字体格式
+    target_cell = row.cells[start_col]
+    for para in target_cell.paragraphs:
+        para.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+        # 仅在无字体时设置兜底样式
+        for run in para.runs:
+            if not run.font.name:
+                run.font.name = '微软雅黑'
+                run._element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
+                run.font.size = Pt(10)
+
+def process_word(file_path):
+    """核心处理逻辑：严格遵循所有规则"""
+    try:
+        doc = Document(file_path)
+        
+        # 遍历文档中所有表格
+        for table in doc.tables:
+            # 遍历行（跳过第一行模板）
+            for row_idx, row in enumerate(table.rows):
+                if row_idx == 0:  # 跳过模板行
+                    continue
+                
+                # 确保行有至少6列
+                if len(row.cells) < 6:
+                    continue
+                
+                cell_2 = row.cells[1]  # 第二列
+                cell_2_text = cell_2.text.strip()
+                is_processed = False   # 标记是否执行边框/内容处理
+                
+                # 规则1：第二列首字符是数字+小数点
+                if len(cell_2_text) >= 2 and cell_2_text[0].isdigit() and cell_2_text[1] == '.':
+                    is_processed = True
+                    
+                    # 提取并剪切标题号码
+                    title_num, remaining_text = extract_title_number(cell_2_text)
+                    
+                    # 替换第二列文本为剪切后的内容
+                    cell_2.text = remaining_text
+                    
+                    # 调整2-6列边框（隐藏内框、保留原格式外框）
+                    adjust_cell_borders(row, 1, 5)
+                    
+                    # 视觉上合并内容，靠左对齐
+                    merge_content_visually(row, 1, 5)
+                    
+                    # 标题号码放入第一列
+                    row.cells[0].text = title_num
+                
+                # 规则2&3：未处理的行
+                if not is_processed:
+                    if len(row.cells) >= 4:
+                        # 第三列填入"符合要求"
+                        cell_3 = row.cells[2]
+                        cell_3.text = "符合要求"
+                        # 设置第三列内容靠左对齐
+                        for para in cell_3.paragraphs:
+                            para.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+                            for run in para.runs:
+                                if not run.font.name:
+                                    run.font.name = '微软雅黑'
+                                    run._element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
+                                    run.font.size = Pt(10)
+                        
+                        # 第四列打勾
+                        cell_4 = row.cells[3]
+                        cell_4.text = "✓"
+                        # 设置勾号格式（确保显示正常）
+                        for para in cell_4.paragraphs:
+                            para.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+                            for run in para.runs:
+                                if not run.font.name:
+                                    run.font.name = 'SimSun'
+                                    run._element.rPr.rFonts.set(qn('w:eastAsia'), 'SimSun')
+                                    run.font.size = Pt(12)
+        
+        # 保存处理后的文档（不覆盖原文件）
+        save_path = file_path.replace('.docx', '_processed.docx')
+        doc.save(save_path)
+        return save_path
+    
+    except Exception as e:
+        raise Exception(f"文档处理出错：{str(e)}")
+
+def select_and_process():
+    """GUI回调函数：选择文件并执行处理"""
+    file_path = filedialog.askopenfilename(
+        title="选择Word文档（仅支持docx格式）",
+        filetypes=[("Word文档", "*.docx"), ("所有文件", "*.*")]
+    )
+    if not file_path:
+        return
+    
+    try:
+        result_path = process_word(file_path)
+        messagebox.showinfo("处理成功", f"文档已处理完成！\n保存路径：\n{result_path}")
+    except Exception as e:
+        messagebox.showerror("处理失败", f"出错原因：\n{str(e)}")
+
+def create_gui():
+    """创建可视化用户界面"""
+    root = tk.Tk()
+    root.title("Word自动化处理工具（Python 3.8.7）")
+    root.geometry("720x340")
+    root.resizable(False, False)
+    
+    # 标题
+    title_label = tk.Label(
+        root,
+        text="Word文档自动化处理工具",
+        font=("微软雅黑", 18, "bold"),
+        fg="#2F5496"
+    )
+    title_label.pack(pady=15)
+    
+    # 规则说明（清晰展示所有要求）
+    rule_text = (
+        "📋 核心处理规则：\n"
+        "1. 跳过每页第一行模板行，不做任何修改；\n"
+        "2. 第二列首字符为「数字+小数点」时：\n"
+        "   - 隐藏2-6列内框，保留原格式外框（粗细/颜色/类型不变）；\n"
+        "   - 视觉上合并2-6列内容（文本层面），靠左对齐；\n"
+        "   - 提取标题号码（数字+点）剪切到第一列；\n"
+        "   - 禁止合并单元格/多行，保持原表格结构；\n"
+        "3. 未触发上述操作的行：\n"
+        "   - 第三列填入「符合要求」；\n"
+        "   - 第四列填入勾号（✓）并靠左对齐。"
+    )
+    rule_label = tk.Label(
+        root,
+        text=rule_text,
+        font=("微软雅黑", 9),
+        justify=tk.LEFT,
+        wraplength=700,
+        fg="#333333"
+    )
+    rule_label.pack(pady=10)
+    
+    # 处理按钮（美化样式）
+    process_btn = tk.Button(
+        root,
+        text="选择并处理docx文档",
+        font=("微软雅黑", 12, "bold"),
+        bg="#2D8CF0",
+        fg="white",
+        padx=40,
+        pady=12,
+        relief=tk.RAISED,
+        command=select_and_process
+    )
+    process_btn.pack(pady=15)
+    
+    # 版本提示
+    version_label = tk.Label(
+        root,
+        text="适配Python 3.8.7 | 仅支持.docx格式文档",
+        font=("微软雅黑", 8),
+        fg="#999999"
+    )
+    version_label.pack(pady=5)
+    
+    root.mainloop()
+
+if __name__ == "__main__":
+    # 安装依赖（必须执行，适配Python 3.8.7）
+    # pip install python-docx==0.8.11
+    create_gui()
+
+
+    
