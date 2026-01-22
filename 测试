@@ -1,0 +1,8 @@
+# 这是Python代码示例
+def calculate_sum(a, b):
+    """计算两个数的和"""
+    return a + b
+
+if __name__ == "__main__":
+    result = calculate_sum(5, 8)
+    print(f"计算结果：{result}")
