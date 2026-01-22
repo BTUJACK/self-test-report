@@ -1,0 +1,128 @@
+你需要将这个Word自动化工具打包成可直接安装的Windows安装包（适配Python 3.8.7），我会分步骤教你完成打包流程，包括环境准备、打包配置和生成安装包的完整操作，即使你是新手也能轻松完成。
+
+### 核心思路
+我们会用 `pyinstaller` 先将Python代码打包成exe可执行文件，再用 `Inno Setup` 将exe、依赖文件打包成Windows安装包（.exe格式，双击即可安装），全程适配Python 3.8.7。
+
+---
+
+## 第一步：环境准备（必做）
+### 1. 确认Python版本
+打开cmd终端，执行：
+```bash
+python --version
+```
+确保输出是 `Python 3.8.7`，如果不是请先安装Python 3.8.7（[下载地址](https://www.python.org/downloads/release/python-387/)）。
+
+### 2. 安装打包依赖
+在cmd中执行以下命令，安装所需工具：
+```bash
+# 安装pyinstaller（适配3.8的版本）
+pip install pyinstaller==5.6.2
+# 安装python-docx（代码依赖）
+pip install python-docx==0.8.11
+```
+
+### 3. 准备代码文件
+将之前的完整代码保存为 `word_auto_tool.py`，放在单独的文件夹（如 `D:\WordAutoTool`），确保文件夹路径无中文、无空格。
+
+---
+
+## 第二步：用PyInstaller打包成EXE
+### 1. 生成spec配置文件（可选，推荐）
+在cmd中进入代码所在文件夹：
+```bash
+cd D:\WordAutoTool
+```
+执行命令生成spec文件（用于自定义打包配置）：
+```bash
+pyinstaller -w -F -i empty.ico --name Word自动化处理工具 word_auto_tool.py
+```
+参数说明：
+- `-w`：隐藏终端窗口（GUI程序必备）
+- `-F`：打包成单个exe文件（方便分发）
+- `-i empty.ico`：可选，设置程序图标（无图标可省略此参数）
+- `--name`：设置exe文件名称
+
+### 2. 执行打包
+执行后会在文件夹中生成 `dist` 文件夹，里面有 `Word自动化处理工具.exe`，双击可直接运行（无需Python环境）。
+
+**验证EXE**：双击exe文件，能正常弹出GUI界面、选择Word文件处理，说明打包成功。
+
+---
+
+## 第三步：用Inno Setup制作安装包
+### 1. 下载安装Inno Setup
+下载地址：[Inno Setup官方下载](https://jrsoftware.org/isdl.php)，安装默认选项即可（支持Windows 10/11）。
+
+### 2. 编写安装包配置文件
+打开Inno Setup，新建脚本文件（`setup.iss`），复制以下内容（根据你的路径修改）：
+```ini
+; 安装包配置文件
+[Setup]
+AppName=Word自动化处理工具
+AppVersion=1.0.0
+AppPublisher=自定义名称
+AppPublisherURL=
+AppSupportURL=
+DefaultDirName={pf}\WordAutoTool  ; 安装到Program Files
+DefaultGroupName=Word自动化处理工具
+OutputDir=D:\WordAutoTool\installer  ; 安装包输出路径
+OutputBaseFilename=Word自动化处理工具_安装包
+Compression=lzma2/ultra  ; 高压缩
+SolidCompression=yes
+PrivilegesRequired=admin  ; 需要管理员权限
+
+[Files]
+; 复制exe文件到安装目录
+Source: "D:\WordAutoTool\dist\Word自动化处理工具.exe"; DestDir: "{app}"; Flags: ignoreversion
+; 可选：添加说明文档
+; Source: "D:\WordAutoTool\使用说明.txt"; DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+; 创建桌面快捷方式
+Name: "{commondesktop}\Word自动化处理工具"; Filename: "{app}\Word自动化处理工具.exe"; WorkingDir: "{app}"
+; 创建开始菜单快捷方式
+Name: "{group}\Word自动化处理工具"; Filename: "{app}\Word自动化处理工具.exe"
+Name: "{group}\卸载"; Filename: "{uninstallexe}"
+
+[Run]
+; 安装完成后可选运行程序
+Filename: "{app}\Word自动化处理工具.exe"; Description: "{cm:LaunchProgram,Word自动化处理工具}"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+; 卸载时删除所有文件
+Type: filesandordirs; Name: "{app}"
+```
+
+### 3. 生成安装包
+- 在Inno Setup中打开 `setup.iss`
+- 点击菜单栏「Build」→「Compile」
+- 等待编译完成，在 `OutputDir` 配置的路径（如 `D:\WordAutoTool\installer`）中会生成 `Word自动化处理工具_安装包.exe`，这就是最终的安装包。
+
+---
+
+## 第四步：打包注意事项（避坑指南）
+### 1. 解决打包后exe运行报错
+- **问题**：exe运行提示“找不到docx模块”
+- **解决**：打包前确保在Python 3.8.7环境中安装了`python-docx==0.8.11`，且打包时使用的是同一环境。
+
+### 2. 图标设置（可选）
+- 若需要自定义图标，将ico文件放在代码文件夹，修改pyinstaller命令中的 `-i` 参数为实际图标路径（如 `-i myicon.ico`）。
+
+### 3. 兼容32/64位系统
+- 若要适配32位系统，需安装32位Python 3.8.7，再重新打包。
+
+### 4. 安装包测试
+- 在另一台无Python环境的Windows电脑上安装测试，确保：
+  1. 安装过程无报错
+  2. 桌面快捷方式能正常打开程序
+  3. 程序能正常处理Word文档
+
+---
+
+## 总结
+1. **核心步骤**：Python环境校验 → 安装打包依赖 → PyInstaller打包exe → Inno Setup制作安装包；
+2. **关键参数**：PyInstaller的`-w -F`确保GUI无终端、单文件，Inno Setup配置文件控制安装路径和快捷方式；
+3. **兼容性**：全程基于Python 3.8.7，打包后的安装包可在任意Windows电脑运行（无需Python环境）。
+
+如果打包过程中遇到“exe运行闪退”“安装包编译失败”等问题，告诉我具体报错信息，我会帮你定位解决。
